@@ -3,7 +3,7 @@ package services
 import (
 	"carwash-bot/internal/models"
 	"fmt"
-	"github.com/google/uuid"
+	"sort"
 	"sync"
 	"time"
 )
@@ -11,21 +11,20 @@ import (
 type ScheduleService struct {
 	bookings     []models.Booking
 	bookingsLock sync.Mutex
-	startTime    int // Начальное время (часы)
-	endTime      int // Конечное время (часы)
+	StartTime    int // Начальное время (часы)
+	EndTime      int // Конечное время (часы)
 	adminID      int64
 }
 
-func NewScheduleService(start, end int) *ScheduleService {
+func NewScheduleService(dbPath string, start, end int, adminID int64) (*ScheduleService, error) {
 	return &ScheduleService{
-		startTime: start,
-		endTime:   end,
-	}
+		StartTime: start,
+		EndTime:   end,
+		adminID:   adminID,
+	}, nil
 }
 
-// BookDateTime - добавляет новую запись с проверкой доступности
 func (s *ScheduleService) BookDateTime(date, timeStr, carModel, carNumber string, userID int64) bool {
-
 	s.bookingsLock.Lock()
 	defer s.bookingsLock.Unlock()
 
@@ -38,7 +37,7 @@ func (s *ScheduleService) BookDateTime(date, timeStr, carModel, carNumber string
 
 	// Добавляем новую запись
 	s.bookings = append(s.bookings, models.Booking{
-		ID:        uuid.New().String(),
+		ID:        fmt.Sprintf("%d-%s-%s", userID, date, timeStr), // Генерируем простой ID
 		Date:      date,
 		Time:      timeStr,
 		CarModel:  carModel,
@@ -50,7 +49,6 @@ func (s *ScheduleService) BookDateTime(date, timeStr, carModel, carNumber string
 	return true
 }
 
-// IsTimeAvailable - проверяет доступность времени
 func (s *ScheduleService) IsTimeAvailable(date, timeStr string) bool {
 	s.bookingsLock.Lock()
 	defer s.bookingsLock.Unlock()
@@ -63,9 +61,25 @@ func (s *ScheduleService) IsTimeAvailable(date, timeStr string) bool {
 	return true
 }
 
-// CancelBooking - отменяет запись по времени
+func (s *ScheduleService) CancelBooking(bookingID string, userID int64) (bool, *models.Booking) {
+	s.bookingsLock.Lock()
+	defer s.bookingsLock.Unlock()
 
-// GetBookingsGroupedByDate - возвращает записи сгруппированные по дате
+	for i, booking := range s.bookings {
+		if booking.ID == bookingID {
+			// Проверяем права (владелец или админ)
+			if booking.UserID == userID || userID == s.adminID {
+				// Удаляем запись
+				deletedBooking := s.bookings[i]
+				s.bookings = append(s.bookings[:i], s.bookings[i+1:]...)
+				return true, &deletedBooking
+			}
+			return false, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *ScheduleService) GetBookingsGroupedByDate() map[string][]models.Booking {
 	s.bookingsLock.Lock()
 	defer s.bookingsLock.Unlock()
@@ -77,7 +91,6 @@ func (s *ScheduleService) GetBookingsGroupedByDate() map[string][]models.Booking
 	return result
 }
 
-// GetAvailableTimeSlots - возвращает доступные временные слоты для даты
 func (s *ScheduleService) GetAvailableTimeSlots(date string) []string {
 	s.bookingsLock.Lock()
 	defer s.bookingsLock.Unlock()
@@ -85,15 +98,13 @@ func (s *ScheduleService) GetAvailableTimeSlots(date string) []string {
 	var slots []string
 	bookedTimes := make(map[string]bool)
 
-	// Собираем занятые времена
 	for _, booking := range s.bookings {
 		if booking.Date == date {
 			bookedTimes[booking.Time] = true
 		}
 	}
 
-	// Генерируем все возможные слоты
-	for hour := s.startTime; hour <= s.endTime; hour++ {
+	for hour := s.StartTime; hour <= s.EndTime; hour++ {
 		timeStr := fmt.Sprintf("%02d:00", hour)
 		if !bookedTimes[timeStr] {
 			slots = append(slots, timeStr)
@@ -103,38 +114,30 @@ func (s *ScheduleService) GetAvailableTimeSlots(date string) []string {
 	return slots
 }
 
-// GetUserBookings - возвращает записи пользователя
-func (s *ScheduleService) CancelBooking(bookingID string, userID int64) (bool, *models.Booking) {
-	s.bookingsLock.Lock()
-	defer s.bookingsLock.Unlock()
-
-	for i, booking := range s.bookings {
-		if booking.ID == bookingID {
-			// Проверяем, что отменяет владелец или админ
-			if booking.UserID == userID || userID == s.adminID {
-				deletedBooking := s.bookings[i]
-				s.bookings = append(s.bookings[:i], s.bookings[i+1:]...)
-				return true, &deletedBooking
-			}
-			return false, nil
-		}
-	}
-	return false, nil
-}
-
-// GetUserBookings - возвращает записи пользователя
 func (s *ScheduleService) GetUserBookings(userID int64) []models.Booking {
 	s.bookingsLock.Lock()
 	defer s.bookingsLock.Unlock()
 
-	var userBookings []models.Booking
+	var result []models.Booking
 	for _, booking := range s.bookings {
 		if booking.UserID == userID {
-			userBookings = append(userBookings, booking)
+			result = append(result, booking)
 		}
 	}
-	return userBookings
+
+	// Сортируем по дате и времени
+	sort.Slice(result, func(i, j int) bool {
+		dateI, _ := time.Parse("02.01.2006", result[i].Date)
+		dateJ, _ := time.Parse("02.01.2006", result[j].Date)
+		if dateI.Equal(dateJ) {
+			return result[i].Time < result[j].Time
+		}
+		return dateI.Before(dateJ)
+	})
+
+	return result
 }
+
 func (s *ScheduleService) GetBooking(userID int64, date, time string) *models.Booking {
 	s.bookingsLock.Lock()
 	defer s.bookingsLock.Unlock()

@@ -26,3 +26,13 @@ type TimeSlot struct {
 	CarModel  any
 	CarNumber any
 }
+
+var weekdays = map[time.Weekday]string{
+	time.Sunday:    "Воскресенье",
+	time.Monday:    "Понедельник",
+	time.Tuesday:   "Вторник",
+	time.Wednesday: "Среда",
+	time.Thursday:  "Четверг",
+	time.Friday:    "Пятница",
+	time.Saturday:  "Суббота",
+}

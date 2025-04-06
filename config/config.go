@@ -9,10 +9,13 @@ import (
 )
 
 type Config struct {
-	BotToken  string
-	AdminID   int64
-	StartTime int // 8 (8:00)
-	EndTime   int // 20 (20:00)
+	BotToken    string
+	AdminID     int64
+	StartTime   int
+	EndTime     int
+	ChannelName string `json:"channel_name"` // Для @username
+	ChannelID   int64  `json:"channel_id"`   // Для числового ID // @channel_username или ID канала
+	AdminIDs    []int64
 }
 
 // Инициализируем при первом вызове
@@ -29,6 +32,7 @@ func Load() *Config {
 		AdminID:   getEnvAsInt64("ADMIN_CHAT_ID", 0),
 		StartTime: getEnvAsInt("START_TIME", 8),
 		EndTime:   getEnvAsInt("END_TIME", 20),
+		ChannelID: getEnvAsInt64("CHANNEL_ID", 0), // 0 - значение по умолчанию
 	}
 }
 
