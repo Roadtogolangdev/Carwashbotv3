@@ -1,30 +1,36 @@
 package main
 
 import (
-	"log"
-	"os"
-
 	"carwash-bot/config"
 	"carwash-bot/internal/bot"
+	"github.com/joho/godotenv"
+	"log"
 )
 
 func main() {
-	// Загружаем конфигурацию
+	// 1. Загрузка переменных окружения
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Предупреждение: не удалось загрузить .env файл: %v", err)
+	}
+
+	// 2. Загрузка конфигурации
 	cfg := config.Load()
 
-	// Проверяем токен вручную (для отладки)
-	token := os.Getenv("7611375727:AAHKbtGJDOlhP5YJKJg8mNTAQRjNumYx1c8")
-	if token == "7611375727:AAHKbtGJDOlhP5YJKJg8mNTAQRjNumYx1c8" {
-		log.Fatal("ERROR: TELEGRAM_BOT_TOKEN environment variable not set")
+	// 3. Валидация конфигурации
+	if cfg.BotToken == "" {
+		log.Fatal("ОШИБКА: Токен бота не установлен. Укажите TELEGRAM_BOT_TOKEN в .env файле")
 	}
-	log.Printf("Bot token: %q", token) // Выводим токен для проверки
 
-	// Создаем бота
+	// 4. Безопасное логирование токена (первые 5 символов)
+	log.Printf("Токен бота загружен (первые 5 символов: %q)", cfg.BotToken[:5])
+
+	// 5. Создание бота
 	carWashBot, err := bot.New(cfg)
 	if err != nil {
 		log.Fatalf("Ошибка создания бота: %v", err)
 	}
 
+	// 6. Запуск бота
 	log.Println("Бот успешно запущен!")
 	carWashBot.Start()
 }
