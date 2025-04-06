@@ -3,6 +3,7 @@ package services
 import (
 	"carwash-bot/internal/models"
 	"fmt"
+	_ "modernc.org/sqlite"
 	"sort"
 	"sync"
 	"time"

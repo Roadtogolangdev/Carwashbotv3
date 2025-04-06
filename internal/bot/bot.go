@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"carwash-bot/storage"
 	"errors"
 	"fmt"
 	"log"
@@ -8,13 +9,12 @@ import (
 
 	"carwash-bot/config"
 	"carwash-bot/internal/models"
-	"carwash-bot/internal/services"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type CarWashBot struct {
 	botAPI        *tgbotapi.BotAPI
-	storage       *services.ScheduleService
+	storage       *storage.SQLiteStorage // Меняем тип на SQLiteStorage
 	userStates    map[int64]models.UserState
 	adminID       int64
 	lastMessageID map[int64]int
@@ -27,31 +27,31 @@ func New(config *config.Config) (*CarWashBot, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	botAPI.Debug = true
 
-	scheduleService, err := services.NewScheduleService(
+	// Заменяем ScheduleService на SQLiteStorage
+	storageService, err := storage.NewSQLiteStorage(
 		"bookings.db",
 		config.StartTime,
 		config.EndTime,
-		config.AdminID,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	return &CarWashBot{
-		botAPI: botAPI,
-
-		storage:       scheduleService,
+		botAPI:        botAPI,
+		storage:       storageService,
 		userStates:    make(map[int64]models.UserState),
 		adminID:       config.AdminID,
 		lastMessageID: make(map[int64]int),
-		config:        config, // <<< ЭТОГО НЕ ХВАТАЛО!
+		config:        config,
 	}, nil
 }
-
 func (b *CarWashBot) Start() {
 	log.Printf("Бот запущен: @%s", b.botAPI.Self.UserName)
+	log.Printf("Admin IDs: %v", b.config.AdminIDs) // Правильное логирование
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -106,6 +106,20 @@ func (b *CarWashBot) answerCallback(callbackID string, text string, showAlert bo
 	if _, err := b.botAPI.Request(callback); err != nil {
 		log.Printf("Ошибка ответа на callback: %v", err)
 	}
+}
+
+func (b *CarWashBot) isAdmin(userID int64) bool {
+	// Проверяем в списке админов
+	for _, adminID := range b.config.AdminIDs {
+		if userID == adminID {
+			return true
+		}
+	}
+	// Для обратной совместимости
+	if b.config.AdminID != 0 && userID == b.config.AdminID {
+		return true
+	}
+	return false
 }
 
 // ... остальные методы ...

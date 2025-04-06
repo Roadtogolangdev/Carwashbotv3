@@ -77,13 +77,13 @@ func (b *CarWashBot) handleCallbackQuery(query *tgbotapi.CallbackQuery) {
 		b.showDaySelection(chatID)
 
 	case strings.HasPrefix(data, "admin_cancel:"):
-		if query.From.ID != b.adminID {
+		if !b.isAdmin(query.From.ID) {
 			b.answerCallback(query.ID, "❌ Только администратор может отменять записи", true)
 			return
 		}
 		bookingID := strings.TrimPrefix(data, "admin_cancel:")
-		success, _ := b.storage.CancelBooking(bookingID, b.adminID)
-		if !success {
+		err := b.storage.DeleteBooking(bookingID)
+		if err != nil {
 			b.answerCallback(query.ID, "⚠️ Не удалось отменить запись", true)
 			return
 		}
@@ -126,15 +126,32 @@ func (b *CarWashBot) sendWelcomeMessage(chatID int64) {
 
 func (b *CarWashBot) handleTimeSelection(chatID, userID int64, timeStr string) {
 	state := b.userStates[userID]
+	now := time.Now()
+	today := now.Format("02.01.2006")
+	if state.SelectedDate == today {
+		selectedTime, err := time.Parse("15:04", timeStr)
+		if err == nil {
+			// Получаем текущее время + 1 час (чтобы нельзя было записаться прямо сейчас)
+			currentTime := now.Add(time.Hour)
+			selectedDateTime := time.Date(
+				now.Year(), now.Month(), now.Day(),
+				selectedTime.Hour(), selectedTime.Minute(), 0, 0, now.Location())
 
+			if selectedDateTime.Before(currentTime) {
+				b.sendMessage(chatID, "❌ Нельзя записаться на прошедшее время")
+				b.showTimeSlots(chatID, state.SelectedDate)
+				return
+			}
+		}
+	}
 	// Проверяем доступность времени
-	if !b.storage.IsTimeAvailable(state.SelectedDate, timeStr) {
+	available, err := b.storage.IsTimeAvailable(state.SelectedDate, timeStr)
+	if err != nil || !available {
 		b.sendMessage(chatID, "❌ Это время уже занято! Выберите другое время.")
 		b.showTimeSlots(chatID, state.SelectedDate)
 		return
 	}
 
-	// Сохраняем время и запрашиваем данные авто
 	b.userStates[userID] = models.UserState{
 		AwaitingCarInfo: true,
 		SelectedDate:    state.SelectedDate,
@@ -162,31 +179,31 @@ func (b *CarWashBot) handleCarInfoInput(chatID, userID int64, text string) {
 	state := b.userStates[userID]
 
 	// Записываем в расписание
-	if !b.storage.BookDateTime(state.SelectedDate, state.SelectedTime, carModel, carNumber, userID) {
-		msg := tgbotapi.NewMessage(chatID, "⚠️ Это время уже занято! Выберите другое время.")
-		msg.ReplyMarkup = tgbotapi.NewReplyKeyboard(
-			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("📝 Записаться"),
-				tgbotapi.NewKeyboardButton("🏠 Главное меню"),
-			),
-		)
-		b.sendMessageWithSave(chatID, msg)
-		return
-	}
-	booking := b.storage.GetBooking(userID, state.SelectedDate, state.SelectedTime)
-	if booking == nil {
-		log.Printf("Не удалось получить данные о записи")
+	err := b.storage.AddBooking(models.Booking{
+		ID:        fmt.Sprintf("%d-%s-%s", userID, state.SelectedDate, state.SelectedTime),
+		Date:      state.SelectedDate,
+		Time:      state.SelectedTime,
+		CarModel:  carModel,
+		CarNumber: carNumber,
+		UserID:    userID,
+		Created:   time.Now(),
+	})
+	if err != nil {
+		b.sendMessage(chatID, "⚠️ Ошибка при сохранении записи")
 		return
 	}
 
-	// Оповещаем канал (добавляем этот блок)
-	if b.config.ChannelID != 0 { // Теперь проверяем на НЕравенство 0
-		if err := b.notifyChannel(*booking); err != nil {
-			log.Printf("Ошибка оповещения канала: %v", err)
-			b.sendMessage(b.adminID, fmt.Sprintf("Ошибка отправки в канал: %v", err))
+	if b.config.ChannelID != 0 {
+		booking, err := b.storage.GetBookingByID(fmt.Sprintf("%d-%s-%s", userID, state.SelectedDate, state.SelectedTime))
+		if err != nil {
+			log.Printf("Ошибка получения записи: %v", err)
+		} else if booking != nil {
+			if err := b.notifyChannel(*booking); err != nil {
+				log.Printf("Ошибка оповещения канала: %v", err)
+				b.sendMessage(b.adminID, fmt.Sprintf("Ошибка отправки в канал: %v", err))
+			}
 		}
 	}
-	// Удаляем состояние пользователя
 	delete(b.userStates, userID)
 
 	// Отправляем подтверждение
@@ -237,7 +254,15 @@ func (b *CarWashBot) showSchedule(chatID int64) {
 		time.December:  "Декабря",
 	}
 
-	bookingsByDate := b.storage.GetBookingsGroupedByDate()
+	allBookings, err := b.storage.GetAllBookings()
+	if err != nil {
+		b.sendMessage(chatID, "⚠️ Ошибка при получении расписания")
+		return
+	}
+	bookingsByDate := make(map[string][]models.Booking)
+	for _, booking := range allBookings {
+		bookingsByDate[booking.Date] = append(bookingsByDate[booking.Date], booking)
+	}
 
 	// Сортируем даты
 	var dates []time.Time
@@ -340,40 +365,42 @@ func (b *CarWashBot) deleteLastMessage(chatID int64) {
 		b.botAPI.Request(deleteMsg)
 	}
 }
-
 func (b *CarWashBot) showTimeSlots(chatID int64, dateStr string) {
+	now := time.Now()
+	todayStr := now.Format("02.01.2006")
+
 	date, err := time.Parse("02.01.2006", dateStr)
 	if err != nil {
 		b.sendMessage(chatID, "Ошибка формата даты")
 		return
 	}
 
-	// Русские названия дней недели
-	weekdayNames := map[time.Weekday]string{
-		time.Monday:    "Понедельник",
-		time.Tuesday:   "Вторник",
-		time.Wednesday: "Среда",
-		time.Thursday:  "Четверг",
-		time.Friday:    "Пятница",
-		time.Saturday:  "Суббота",
-		time.Sunday:    "Воскресенье",
+	weekdayNames := [...]string{
+		"Воскресенье", "Понедельник", "Вторник",
+		"Среда", "Четверг", "Пятница", "Суббота",
 	}
 
-	// Форматируем заголовок с русским днём недели
 	header := fmt.Sprintf("Выберите время на %s, %s:",
 		weekdayNames[date.Weekday()],
 		date.Format("02.01.2006"))
 
 	var rows [][]tgbotapi.InlineKeyboardButton
 
-	// Получаем все возможные слоты для этого дня
 	for hour := b.storage.StartTime; hour <= b.storage.EndTime; hour++ {
 		timeStr := fmt.Sprintf("%02d:00", hour)
-		available := b.storage.IsTimeAvailable(dateStr, timeStr)
+		available, err := b.storage.IsTimeAvailable(dateStr, timeStr)
+		if err != nil {
+			available = false
+		}
+
+		// Если это сегодня и время уже прошло
+		if dateStr == todayStr && hour <= now.Hour() {
+			available = false
+		}
 
 		btnText := fmt.Sprintf("🕒 %s", timeStr)
 		if !available {
-			btnText = "🔴 " + timeStr + " (Занято)"
+			btnText = "🔴 " + timeStr + " (Недоступно)"
 		} else {
 			btnText = "🟢 " + timeStr + " (Свободно)"
 		}
@@ -431,13 +458,33 @@ func (b *CarWashBot) showDaySelection(chatID int64) {
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(buttons...)
 	b.sendMessageWithSave(chatID, msg)
 }
-
 func (b *CarWashBot) handleDaySelection(chatID, userID int64, dateStr string) {
+	now := time.Now()
+	todayStr := now.Format("02.01.2006")
+
+	// Парсим выбранную дату
 	selectedDate, err := time.Parse("02.01.2006", dateStr)
-	if err != nil || selectedDate.Before(time.Now().Truncate(24*time.Hour)) {
+	if err != nil {
+		b.sendMessage(chatID, "❌ Ошибка формата даты")
+		b.showDaySelection(chatID)
+		return
+	}
+
+	// Проверяем, что дата не в прошлом (используем parsedDate)
+	if selectedDate.Before(now.Truncate(24 * time.Hour)) {
 		b.sendMessage(chatID, "❌ Нельзя записаться на прошедшую дату")
 		b.showDaySelection(chatID)
 		return
+	}
+
+	// Если выбрана сегодняшняя дата
+	if dateStr == todayStr {
+		currentHour := now.Hour()
+		if currentHour >= b.storage.EndTime {
+			b.sendMessage(chatID, "❌ На сегодня время записи уже закончилось")
+			b.showDaySelection(chatID)
+			return
+		}
 	}
 
 	b.userStates[userID] = models.UserState{
@@ -448,7 +495,11 @@ func (b *CarWashBot) handleDaySelection(chatID, userID int64, dateStr string) {
 	b.showTimeSlots(chatID, dateStr)
 }
 func (b *CarWashBot) showUserBookings(chatID, userID int64) {
-	bookings := b.storage.GetUserBookings(userID)
+	bookings, err := b.storage.GetUserBookings(userID)
+	if err != nil {
+		b.sendMessage(chatID, "⚠️ Ошибка при получении ваших записей")
+		return
+	}
 
 	if len(bookings) == 0 {
 		b.sendMessage(chatID, "У вас нет активных записей.")
@@ -486,7 +537,7 @@ func (b *CarWashBot) showUserBookings(chatID, userID int64) {
 	b.sendMessageWithSave(chatID, msg)
 }
 func (b *CarWashBot) handleCancelCommand(chatID, userID int64) {
-	userBookings := b.storage.GetUserBookings(userID)
+	userBookings, _ := b.storage.GetUserBookings(userID)
 	if len(userBookings) == 0 {
 		b.sendMessage(chatID, "У вас нет активных записей.")
 		return
@@ -511,9 +562,20 @@ func (b *CarWashBot) handleCancelCommand(chatID, userID int64) {
 }
 
 func (b *CarWashBot) handleBookingCancellation(chatID, userID int64, bookingID string) {
-	success, booking := b.storage.CancelBooking(bookingID, userID)
-	if !success || booking == nil {
-		b.sendMessage(chatID, "❌ Не удалось отменить запись. Возможно, она уже была отменена или у вас нет прав.")
+	booking, err := b.storage.GetBookingByID(bookingID)
+	if err != nil {
+		b.sendMessage(chatID, "❌ Ошибка при отмене записи")
+		return
+	}
+
+	if booking == nil {
+		b.sendMessage(chatID, "❌ Запись не найдена")
+		return
+	}
+
+	err = b.storage.DeleteBooking(bookingID)
+	if err != nil {
+		b.sendMessage(chatID, "❌ Не удалось отменить запись")
 		return
 	}
 
@@ -522,7 +584,6 @@ func (b *CarWashBot) handleBookingCancellation(chatID, userID int64, bookingID s
 		booking.Time,
 		booking.CarModel,
 		booking.CarNumber)
-
 	b.sendMessage(chatID, msg)
 
 	// Уведомление администратора

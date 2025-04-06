@@ -3,15 +3,17 @@ package storage
 import (
 	"carwash-bot/internal/models"
 	"database/sql"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 type SQLiteStorage struct {
-	db *sql.DB
+	db        *sql.DB
+	StartTime int
+	EndTime   int
 }
 
-func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+func NewSQLiteStorage(dbPath string, startTime, endTime int) (*SQLiteStorage, error) {
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -21,20 +23,24 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 	}
 
 	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS bookings (
-			id TEXT PRIMARY KEY,
-			date TEXT NOT NULL,
-			time TEXT NOT NULL,
-			car_model TEXT NOT NULL,
-			car_number TEXT NOT NULL,
-			user_id INTEGER NOT NULL,
-			created_at TIMESTAMP NOT NULL
-		);
-	`); err != nil {
+        CREATE TABLE IF NOT EXISTS bookings (
+            id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            car_model TEXT NOT NULL,
+            car_number TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            created_at TIMESTAMP NOT NULL
+        );
+    `); err != nil {
 		return nil, err
 	}
 
-	return &SQLiteStorage{db: db}, nil
+	return &SQLiteStorage{
+		db:        db,
+		StartTime: startTime,
+		EndTime:   endTime,
+	}, nil
 }
 
 func (s *SQLiteStorage) AddBooking(booking models.Booking) error {

@@ -4,18 +4,18 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv" // Добавляем импорт
 )
 
 type Config struct {
-	BotToken    string
-	AdminID     int64
-	StartTime   int
-	EndTime     int
-	ChannelName string `json:"channel_name"` // Для @username
-	ChannelID   int64  `json:"channel_id"`   // Для числового ID // @channel_username или ID канала
-	AdminIDs    []int64
+	BotToken  string
+	AdminID   int64   // Оставляем для обратной совместимости
+	AdminIDs  []int64 // Добавляем поддержку нескольких админов
+	StartTime int
+	EndTime   int
+	ChannelID int64
 }
 
 // Инициализируем при первом вызове
@@ -28,11 +28,12 @@ func init() {
 
 func Load() *Config {
 	return &Config{
-		BotToken:  getEnv("TELEGRAM_BOT_TOKEN", ""), // Убрали хардкод
+		BotToken:  getEnv("TELEGRAM_BOT_TOKEN", ""),
 		AdminID:   getEnvAsInt64("ADMIN_CHAT_ID", 0),
+		AdminIDs:  parseAdminIDs(getEnv("ADMIN_IDS", "")),
 		StartTime: getEnvAsInt("START_TIME", 8),
 		EndTime:   getEnvAsInt("END_TIME", 20),
-		ChannelID: getEnvAsInt64("CHANNEL_ID", 0), // 0 - значение по умолчанию
+		ChannelID: getEnvAsInt64("CHANNEL_ID", 0),
 	}
 }
 
@@ -59,4 +60,48 @@ func getEnvAsInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+func getEnvAsInt64Slice(key string, defaultValue []int64) []int64 {
+	if value, exists := os.LookupEnv(key); exists {
+		parts := strings.Split(value, ",")
+		var result []int64
+		for _, part := range parts {
+			num, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+			if err == nil {
+				result = append(result, num)
+			}
+		}
+		return result
+	}
+	return defaultValue
+}
+
+func parseAdminIDs(idsStr string) []int64 {
+	if idsStr == "" {
+		return nil
+	}
+
+	var ids []int64
+	for _, idStr := range strings.Split(idsStr, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
+		if err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+func getAdminIDs() []int64 {
+	idsStr := getEnv("ADMIN_IDS", "123")
+	if idsStr == "" {
+		return []int64{}
+	}
+
+	var ids []int64
+	for _, idStr := range strings.Split(idsStr, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
+		if err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
